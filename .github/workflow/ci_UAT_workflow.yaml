@@ -1,0 +1,117 @@
+name: CI Pipeline
+
+on:
+  pull_request:
+    branches: [ feature ]
+    types: [ opened, synchronize, reopened ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+          
+      - name: Cache Maven packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+      
+      - name: Build with Maven
+        run: mvn clean package
+
+      - name: Run SonarCloud Analysis
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          mvn verify sonar:sonar \
+            -Dsonar.projectKey=NavneetGL_Workflow \
+            -Dsonar.organization=navneetgl \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.login=$SONAR_TOKEN
+
+      
+      - name: SonarCloud Quality Gate
+        uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
+        with:
+          scanMetadataReportFile: target/sonar/report-task.txt
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/maven-3-jdk-17@master
+        env:
+          JAVA_HOME: ${{ steps.setup-java.outputs.java-home }}  
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Configure Maven for JFrog
+        run: |
+          mkdir -p ~/.m2
+          cat <<EOF > ~/.m2/settings.xml
+          <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                    xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 http://maven.apache.org/xsd/settings-1.2.0.xsd">
+              <servers>
+                <server>
+                  <id>central</id>
+                  <username>${{ secrets.JFROG_USER }}</username>
+                  <password>${{ secrets.JFROG_PASSWORD }}</password>
+                </server>
+                <server>
+                  <id>snapshots</id>
+                  <username>${{ secrets.JFROG_USER }}</username>
+                  <password>${{ secrets.JFROG_PASSWORD }}</password>
+                </server>
+              </servers>
+            
+              <profiles>
+                <profile>
+                  <id>artifactory</id>
+                  <repositories>
+                    <repository>
+                      <id>central</id>
+                      <url>https://trial8kmwlh.jfrog.io/artifactory/workflow-libs-release</url>
+                    </repository>
+                    <repository>
+                      <id>snapshots</id>
+                      <url>https://trial8kmwlh.jfrog.io/artifactory/workflow-libs-snapshot</url>
+                      <snapshots>
+                        <enabled>true</enabled>
+                      </snapshots>
+                    </repository>
+                  </repositories>
+                  <pluginRepositories>
+                    <pluginRepository>
+                      <id>central</id>
+                      <url>https://trial8kmwlh.jfrog.io/artifactory/workflow-libs-release</url>
+                    </pluginRepository>
+                    <pluginRepository>
+                      <id>snapshots</id>
+                      <url>https://trial8kmwlh.jfrog.io/artifactory/workflow-libs-snapshot</url>
+                      <snapshots>
+                        <enabled>true</enabled>
+                      </snapshots>
+                    </pluginRepository>
+                  </pluginRepositories>
+                </profile>
+              </profiles>
+            
+              <activeProfiles>
+                <activeProfile>artifactory</activeProfile>
+              </activeProfiles>
+          </settings>
+          EOF
+
+
+      - name: Publish to JFrog Artifactory
+        run: mvn deploy -DskipTests
